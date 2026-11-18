@@ -1,4 +1,4 @@
-name: CIBuildExe
+name: CIbuild
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Build (${{ matrix.os }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -30,36 +30,45 @@ jobs:
         run: go test -mod=vendor -race ./...
 
   cross-build:
-    name: Cross-build ${{ matrix.target }}
+    name: Cross-build ${{ matrix.platform }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: darwin/amd64
-          - target: darwin/arm64
-          - target: freebsd/amd64
-          - target: linux/amd64
-          - target: linux/arm64
-          - target: linux/arm/v7
-          - target: windows/amd64
+          - platform: linux-amd64
+            goos: linux
+            goarch: amd64
+            goarm: ""
+          - platform: windows-amd64
+            goos: windows
+            goarch: amd64
+            goarm: ""
+          - platform: linux-armv7
+            goos: linux
+            goarch: arm
+            goarm: "7"
+          - platform: linux-arm64
+            goos: linux
+            goarch: arm64
+            goarm: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Build ${{ matrix.target }}
+      - name: Build ${{ matrix.platform }}
         shell: bash
         run: |
           set -euo pipefail
           export CGO_ENABLED=0
           export GOMIPS=softfloat
 
-          IFS='/' read -r GOOS GOARCH GOARM <<< "${{ matrix.target }}"
-          GOARM="${GOARM:-}"
-
-          NAME="$GOOS-$GOARCH${GOARM:+v$GOARM}"
+          GOOS="${{ matrix.goos }}"
+          GOARCH="${{ matrix.goarch }}"
+          GOARM="${{ matrix.goarm }}"
+          NAME="${{ matrix.platform }}"
           OUTDIR="dist/$NAME"
           mkdir -p "$OUTDIR"
 
@@ -77,15 +86,15 @@ jobs:
           ( cd "$OUTDIR" && zip -q -r "../${NAME}.zip" . )
           rm -rf "$OUTDIR"
           ls -lh "dist/${NAME}.zip"
-      - name: Upload artifact for ${{ matrix.target }}
+      - name: Upload artifact ${{ matrix.platform }}
         uses: actions/upload-artifact@v4
         with:
-          name: bin-${{ strategy.job-index }}
-          path: dist/*.zip
+          name: bin-${{ matrix.platform }}
+          path: dist/${{ matrix.platform }}.zip
           if-no-files-found: error
 
   release:
-    name: Release ${{ matrix.target }}
+    name: Release ${{ matrix.platform }}
     needs: [test, cross-build]
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
@@ -98,26 +107,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: darwin/amd64
-            platform: darwin-amd64
-          - target: darwin/arm64
-            platform: darwin-arm64
-          - target: freebsd/amd64
-            platform: freebsd-amd64
-          - target: linux/amd64
-            platform: linux-amd64
-          - target: linux/arm64
-            platform: linux-arm64
-          - target: linux/arm/v7
-            platform: linux-armv7
-          - target: windows/amd64
-            platform: windows-amd64
+          - platform: linux-amd64
+          - platform: windows-amd64
+          - platform: linux-armv7
+          - platform: linux-arm64
     steps:
       - uses: actions/checkout@v4
-      - name: Download artifact
+      - name: Download artifact ${{ matrix.platform }}
         uses: actions/download-artifact@v4
         with:
-          name: bin-${{ strategy.job-index }}
+          name: bin-${{ matrix.platform }}
           path: dist
 
       - name: Compute version (yyyymmdd-sn) for ${{ matrix.platform }}
@@ -127,7 +126,6 @@ jobs:
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
 
-          # 该平台当天已有 tag：形如 yyyymmdd-<platform>-<sn>
           PREFIX="refs/tags/${DATE}-${{ matrix.platform }}-"
           git ls-remote --tags --refs origin \
             | awk -v p="$PREFIX" '$2 ~ "^"p {print $2}' \
