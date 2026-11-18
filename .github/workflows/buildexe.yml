@@ -52,6 +52,15 @@ jobs:
             goos: linux
             goarch: arm64
             goarm: ""
+          # ===== OpenWrt =====
+          - platform: openwrt-amd64
+            goos: linux
+            goarch: amd64
+            goarm: ""
+          - platform: openwrt-armv7
+            goos: linux
+            goarch: arm
+            goarm: "7"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -124,7 +133,6 @@ jobs:
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
 
-          # 当天已存在的 release tag：形如 yyyymmdd-<sn>
           PREFIX="refs/tags/${DATE}-"
           git ls-remote --tags --refs origin \
             | awk -v p="$PREFIX" '$2 ~ "^"p"[0-9]+$" {print $2}' \
