@@ -1,4 +1,4 @@
-name: CI build exe
+name: CIBuildExe
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -30,92 +30,116 @@ jobs:
         run: go test -mod=vendor -race ./...
 
   cross-build:
-    name: Cross-build release targets
+    name: Cross-build ${{ matrix.target }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin/amd64
+          - target: darwin/arm64
+          - target: freebsd/amd64
+          - target: linux/amd64
+          - target: linux/arm64
+          - target: linux/arm/v7
+          - target: windows/amd64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Build client and server
+      - name: Build ${{ matrix.target }}
         shell: bash
         run: |
           set -euo pipefail
           export CGO_ENABLED=0
           export GOMIPS=softfloat
 
-          build_one() {
-            local goos="$1" goarch="$2" goarm="${3:-}"
-            local name="$goos-$goarch${goarm:+v$goarm}"
-            local outdir="dist/$name"
-            mkdir -p "$outdir"
+          IFS='/' read -r GOOS GOARCH GOARM <<< "${{ matrix.target }}"
+          GOARM="${GOARM:-}"
 
-            local ext=""
-            [ "$goos" = "windows" ] && ext=".exe"
+          NAME="$GOOS-$GOARCH${GOARM:+v$GOARM}"
+          OUTDIR="dist/$NAME"
+          mkdir -p "$OUTDIR"
 
-            echo "Building $name"
-            GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
-              go build -mod=vendor -trimpath -ldflags="-s -w" \
-              -o "$outdir/client$ext" ./client
-            GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
-              go build -mod=vendor -trimpath -ldflags="-s -w" \
-              -o "$outdir/server$ext" ./server
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
 
-            ( cd "$outdir" && zip -q -r "../${name}.zip" . )
-            rm -rf "$outdir"
-          }
+          echo "Building $NAME"
+          GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" \
+            go build -mod=vendor -trimpath -ldflags="-s -w" \
+            -o "$OUTDIR/client$EXT" ./client
+          GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" \
+            go build -mod=vendor -trimpath -ldflags="-s -w" \
+            -o "$OUTDIR/server$EXT" ./server
 
-          for target in darwin/amd64 darwin/arm64 freebsd/amd64 \
-            linux/386 linux/amd64 linux/arm64 linux/loong64 \
-            linux/mips linux/mipsle windows/386 windows/amd64 windows/arm64; do
-            build_one "${target%/*}" "${target#*/}"
-          done
-          for arm in 5 6 7; do
-            build_one linux arm "$arm"
-          done
-
-          ls -lh dist/
-      - name: Upload artifacts
+          ( cd "$OUTDIR" && zip -q -r "../${NAME}.zip" . )
+          rm -rf "$OUTDIR"
+          ls -lh "dist/${NAME}.zip"
+      - name: Upload artifact for ${{ matrix.target }}
         uses: actions/upload-artifact@v4
         with:
-          name: release-binaries
+          name: bin-${{ strategy.job-index }}
           path: dist/*.zip
           if-no-files-found: error
 
   release:
-    name: Auto Tag & Release
+    name: Release ${{ matrix.target }}
     needs: [test, cross-build]
-    # 只在 push 到默认分支时自动发布；PR 不发布
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ github.repository }}-${{ matrix.platform }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin/amd64
+            platform: darwin-amd64
+          - target: darwin/arm64
+            platform: darwin-arm64
+          - target: freebsd/amd64
+            platform: freebsd-amd64
+          - target: linux/amd64
+            platform: linux-amd64
+          - target: linux/arm64
+            platform: linux-arm64
+          - target: linux/arm/v7
+            platform: linux-armv7
+          - target: windows/amd64
+            platform: windows-amd64
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - name: Download artifact
+        uses: actions/download-artifact@v4
         with:
-          name: release-binaries
+          name: bin-${{ strategy.job-index }}
           path: dist
 
-      - name: Compute version (yyyymmdd-sn)
+      - name: Compute version (yyyymmdd-sn) for ${{ matrix.platform }}
         id: version
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
 
-          # 查询当天已存在的 tag 数量（按前缀匹配分页取全）
-          COUNT=$(gh api --paginate \
-            "repos/${GITHUB_REPOSITORY}/git/refs/tags" \
-            --jq ".[] | select(.ref | startswith(\"refs/tags/${DATE}-\")) | .ref" \
-            | wc -l | tr -d ' ')
+          # 该平台当天已有 tag：形如 yyyymmdd-<platform>-<sn>
+          PREFIX="refs/tags/${DATE}-${{ matrix.platform }}-"
+          git ls-remote --tags --refs origin \
+            | awk -v p="$PREFIX" '$2 ~ "^"p {print $2}' \
+            > /tmp/existing.txt || true
 
+          COUNT=$(wc -l < /tmp/existing.txt | tr -d ' ')
           SN=$((COUNT + 1))
-          VERSION="${DATE}-${SN}"
+          VERSION="${DATE}-${{ matrix.platform }}-${SN}"
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${VERSION}"
+          echo "Resolved version: ${VERSION} (existing today: ${COUNT})"
+          cat /tmp/existing.txt || true
 
       - name: Create tag
         shell: bash
