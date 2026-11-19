@@ -57,10 +57,9 @@ jobs:
             goos: linux
             goarch: amd64
             goarm: ""
-          - platform: openwrt-armv7
+          - platform: openwrt-aarch64
             goos: linux
-            goarch: arm
-            goarm: "7"
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
